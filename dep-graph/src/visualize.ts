@@ -296,6 +296,7 @@ function bfs(startId, adjFn) {
 // ── Selection state ───────────────────────────────────────────────────────────
 let selectedId = null;
 let savedPositions = {};
+let clusterIds = new Set();  // all node ids currently in the focused cluster
 
 network.on('click', function(params) {
   if (params.nodes.length > 0) {
@@ -307,58 +308,62 @@ network.on('click', function(params) {
   }
 });
 
+function styleSubgraphNode(n, focusId, ancestors, descendants) {
+  const base = Math.max(ORIG_SIZE[n.id] || 9, 12);
+  if (n.id === focusId) {
+    return { ...n,
+      color: { background: '#FFD700', border: '#ffffff', highlight: { background: '#FFE55C', border: '#ffffff' } },
+      borderWidth: 3,
+      shadow: { enabled: true, color: 'rgba(255,215,0,0.6)', size: 20, x: 0, y: 0 },
+      font: { color: '#000000', size: 14, bold: true },
+      size: Math.max(base, 22),
+      label: n.id.length > 30 ? n.id.slice(0, 28) + '…' : n.id,
+    };
+  } else if (ancestors.has(n.id)) {
+    return { ...n,
+      color: { background: '#E8680A', border: '#FFB347', highlight: { background: '#FF9933', border: '#FFD700' } },
+      borderWidth: 2, shadow: { enabled: false },
+      font: { color: '#ffffff', size: 11, bold: false },
+      size: Math.max(base, 12),
+      label: n.label || (DEGREE[n.id] >= 2 ? (n.id.length > 26 ? n.id.slice(0,24)+'…' : n.id) : ''),
+    };
+  } else {
+    return { ...n,
+      color: { background: '#0096CC', border: '#33DDFF', highlight: { background: '#00BFFF', border: '#66EEFF' } },
+      borderWidth: 2, shadow: { enabled: false },
+      font: { color: '#ffffff', size: 11, bold: false },
+      size: Math.max(base, 12),
+      label: n.label || (DEGREE[n.id] >= 2 ? (n.id.length > 26 ? n.id.slice(0,24)+'…' : n.id) : ''),
+    };
+  }
+}
+
+function clearHoverState() {
+  _hoverId = null;
+  _hoverPrev = null;
+}
+
 function selectNode(id) {
-  // Save positions of all currently visible nodes before replacing
+  clearHoverState();
   if (!selectedId) {
     savedPositions = network.getPositions();
   }
   selectedId = id;
   showToolDetail(id);
 
-  const ancestors   = bfs(id, cur => BWD[cur]);  // must run BEFORE
-  const descendants = bfs(id, cur => FWD[cur]);  // this ENABLES
-  const subgraphIds = new Set([id, ...ancestors, ...descendants]);
+  const ancestors   = bfs(id, cur => BWD[cur]);
+  const descendants = bfs(id, cur => FWD[cur]);
+  clusterIds = new Set([id, ...ancestors, ...descendants]);
 
-  // ── Keep ONLY subgraph nodes in the dataset ──
   const subNodes = ALL_NODES
-    .filter(n => subgraphIds.has(n.id))
-    .map(n => {
-      const base = Math.max(ORIG_SIZE[n.id] || 9, 12);
-      if (n.id === id) {
-        return { ...n,
-          color: { background: '#FFD700', border: '#ffffff', highlight: { background: '#FFE55C', border: '#ffffff' } },
-          borderWidth: 3,
-          shadow: { enabled: true, color: 'rgba(255,215,0,0.6)', size: 20, x: 0, y: 0 },
-          font: { color: '#000000', size: 14, bold: true },
-          size: Math.max(base, 22),
-          label: n.id.length > 30 ? n.id.slice(0, 28) + '…' : n.id,
-        };
-      } else if (ancestors.has(n.id)) {
-        return { ...n,
-          color: { background: '#E8680A', border: '#FFB347', highlight: { background: '#FF9933', border: '#FFD700' } },
-          borderWidth: 2, shadow: { enabled: false },
-          font: { color: '#ffffff', size: 11, bold: false },
-          size: Math.max(base, 12),
-          label: n.label || (DEGREE[n.id] >= 2 ? (n.id.length > 26 ? n.id.slice(0,24)+'…' : n.id) : ''),
-        };
-      } else {
-        // descendant
-        return { ...n,
-          color: { background: '#0096CC', border: '#33DDFF', highlight: { background: '#00BFFF', border: '#66EEFF' } },
-          borderWidth: 2, shadow: { enabled: false },
-          font: { color: '#ffffff', size: 11, bold: false },
-          size: Math.max(base, 12),
-          label: n.label || (DEGREE[n.id] >= 2 ? (n.id.length > 26 ? n.id.slice(0,24)+'…' : n.id) : ''),
-        };
-      }
-    });
+    .filter(n => clusterIds.has(n.id))
+    .map(n => styleSubgraphNode(n, id, ancestors, descendants));
 
   nodesDS.clear();
   nodesDS.add(subNodes);
 
-  // ── Keep only edges within subgraph, colored by direction ──
   const subEdges = ALL_EDGES
-    .filter(e => subgraphIds.has(e.from) && subgraphIds.has(e.to))
+    .filter(e => clusterIds.has(e.from) && clusterIds.has(e.to))
     .map(e => {
       const isUpstream = ancestors.has(e.from) || e.to === id;
       const col = isUpstream ? '#E8680A' : '#0096CC';
@@ -369,7 +374,54 @@ function selectNode(id) {
   edgesDS.clear();
   edgesDS.add(subEdges);
 
-  // ── Spread subgraph with physics, then zoom in tight ──
+  spreadAndFit(clusterIds);
+}
+
+// Expand the existing cluster with a new node's deps (called from sidebar)
+function expandNode(id) {
+  clearHoverState();
+  selectedId = id;
+  showToolDetail(id);
+
+  const ancestors   = bfs(id, cur => BWD[cur]);
+  const descendants = bfs(id, cur => FWD[cur]);
+  const newIds = new Set([id, ...ancestors, ...descendants]);
+
+  // Merge into existing cluster
+  newIds.forEach(nid => clusterIds.add(nid));
+
+  // Add only the new nodes (keep existing ones in place)
+  const existingIds = new Set(nodesDS.getIds());
+  const toAdd = ALL_NODES
+    .filter(n => clusterIds.has(n.id) && !existingIds.has(n.id))
+    .map(n => styleSubgraphNode(n, id, ancestors, descendants));
+  nodesDS.add(toAdd);
+
+  // Restyle the newly focused node (gold) and demote the old focus
+  const allAnc = ancestors;
+  const allDesc = descendants;
+  nodesDS.getIds().forEach(nid => {
+    const n = ALL_NODES.find(nd => nd.id === nid);
+    if (!n) return;
+    nodesDS.update(styleSubgraphNode(n, id, allAnc, allDesc));
+  });
+
+  // Add any new edges that connect within the expanded cluster
+  const existingEdgeIds = new Set(edgesDS.getIds());
+  const newEdges = ALL_EDGES
+    .filter(e => clusterIds.has(e.from) && clusterIds.has(e.to) && !existingEdgeIds.has(e.id))
+    .map(e => {
+      const isUpstream = ancestors.has(e.from) || e.to === id;
+      const col = isUpstream ? '#E8680A' : '#0096CC';
+      return { ...e, color: { color: col, highlight: '#FFD700', opacity: 1 }, width: 2,
+        font: { color: col, size: 10, strokeWidth: 2, strokeColor: '#0d1117' } };
+    });
+  edgesDS.add(newEdges);
+
+  spreadAndFit(clusterIds);
+}
+
+function spreadAndFit(nodeIds) {
   network.setOptions({ physics: {
     enabled: true,
     barnesHut: { gravitationalConstant: -8000, springLength: 160, springConstant: 0.04, damping: 0.25 },
@@ -378,7 +430,7 @@ function selectNode(id) {
   network.once('stabilized', () => {
     network.setOptions({ physics: { enabled: false } });
     network.fit({
-      nodes: [...subgraphIds],
+      nodes: [...nodeIds],
       animation: { duration: 450, easingFunction: 'easeInOutQuad' }
     });
     setTimeout(() => {
@@ -389,14 +441,16 @@ function selectNode(id) {
 }
 
 function deselect() {
+  clearHoverState();
   selectedId = null;
+  clusterIds = new Set();
   clearDetail();
 
   // Rebuild adjacency
   ALL_NODES.forEach(n => { FWD[n.id] = new Set(); BWD[n.id] = new Set(); });
   ALL_EDGES.forEach(e => { FWD[e.from]?.add(e.to); BWD[e.to]?.add(e.from); });
 
-  // Recompute which nodes should be visible (same logic as applyFilters)
+  // Recompute which nodes should be visible
   const activeGroups = new Set([...document.querySelectorAll('.group-filter:checked')].map(c => c.dataset.group));
   const showIsolated = document.getElementById('isolated-toggle').checked;
   const effectiveMin = showIsolated ? 0 : Math.max(minDegree, 1);
@@ -478,7 +532,7 @@ function showToolDetail(toolId) {
     for (const g of inGrouped) {
       const tip = g.reasons.join('; ');
       const params = g.labels.map(l => \`<span class="edge-param">\${l}</span>\`).join(' ');
-      html += \`<div class="edge-item edge-up" title="\${tip}" onclick="selectNode('\${g.id}')" onmouseenter="highlightNode('\${g.id}')" onmouseleave="unhighlightNode('\${g.id}')"><span class="edge-tool">\${g.id}</span>\${params}</div>\`;
+      html += \`<div class="edge-item edge-up" title="\${tip}" onclick="expandNode('\${g.id}')" onmouseenter="highlightNode('\${g.id}')" onmouseleave="unhighlightNode('\${g.id}')"><span class="edge-tool">\${g.id}</span>\${params}</div>\`;
     }
     html += '</div>';
   }
@@ -488,7 +542,7 @@ function showToolDetail(toolId) {
     for (const g of outGrouped) {
       const tip = g.reasons.join('; ');
       const params = g.labels.map(l => \`<span class="edge-param">\${l}</span>\`).join(' ');
-      html += \`<div class="edge-item edge-down" title="\${tip}" onclick="selectNode('\${g.id}')" onmouseenter="highlightNode('\${g.id}')" onmouseleave="unhighlightNode('\${g.id}')"><span class="edge-tool">\${g.id}</span>\${params}</div>\`;
+      html += \`<div class="edge-item edge-down" title="\${tip}" onclick="expandNode('\${g.id}')" onmouseenter="highlightNode('\${g.id}')" onmouseleave="unhighlightNode('\${g.id}')"><span class="edge-tool">\${g.id}</span>\${params}</div>\`;
     }
     html += '</div>';
   }
@@ -500,12 +554,18 @@ let _hoverId = null;
 let _hoverPrev = null;
 
 function highlightNode(id) {
+  // #region agent log
+  console.warn('[DBG351533] highlightNode', {id, prevHoverId:_hoverId, nodeExists:!!nodesDS.get(id)});
+  // #endregion
   if (_hoverId === id) return;
   if (_hoverId) unhighlightNode(_hoverId);
   const node = nodesDS.get(id);
   if (!node) return;
   _hoverId = id;
-  _hoverPrev = { borderWidth: node.borderWidth, shadow: node.shadow, size: node.size };
+  _hoverPrev = { borderWidth: node.borderWidth, shadow: JSON.parse(JSON.stringify(node.shadow || {})), size: node.size };
+  // #region agent log
+  console.warn('[DBG351533] highlightNode:saved', {id, prevBW:_hoverPrev.borderWidth, prevShadow:_hoverPrev.shadow, prevSize:_hoverPrev.size});
+  // #endregion
   nodesDS.update({ id: id, borderWidth: 4, shadow: { enabled: true, color: '#FFD70088', size: 15, x: 0, y: 0 },
     size: (node.size || 12) + 8 });
   network.focus(id, { scale: network.getScale(), animation: { duration: 200, easingFunction: 'easeInOutQuad' } });
@@ -513,10 +573,16 @@ function highlightNode(id) {
 
 function unhighlightNode(id) {
   if (!id) id = _hoverId;
+  // #region agent log
+  console.warn('[DBG351533] unhighlightNode', {id, hoverId:_hoverId, hasPrev:!!_hoverPrev, nodeExists:!!nodesDS.get(id), idMatch:id===_hoverId});
+  // #endregion
   if (!id) return;
   const node = nodesDS.get(id);
-  if (!node) return;
+  if (!node) { _hoverId = null; _hoverPrev = null; return; }
   if (_hoverPrev && id === _hoverId) {
+    // #region agent log
+    console.warn('[DBG351533] unhighlight:restoring', {id, bw:_hoverPrev.borderWidth, shadow:_hoverPrev.shadow, size:_hoverPrev.size});
+    // #endregion
     nodesDS.update({ id: id, borderWidth: _hoverPrev.borderWidth, shadow: _hoverPrev.shadow, size: _hoverPrev.size });
   }
   _hoverId = null;
