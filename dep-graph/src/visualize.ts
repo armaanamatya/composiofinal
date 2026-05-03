@@ -202,7 +202,7 @@ export async function generateHTML(graph: Graph): Promise<void> {
       <h3>Connectivity Filter</h3>
       <div class="degree-row">
         <label>Min connections</label>
-        <input type="range" id="degree-slider" min="0" max="15" value="1" step="1" oninput="onDegreeChange(this.value)">
+        <input type="range" id="degree-slider" min="0" max="15" value="1" step="1" oninput="onDegreeInput(this.value)" onchange="onDegreeChange(this.value)">
         <span id="degree-val">1</span>
       </div>
       <div class="degree-row">
@@ -453,25 +453,34 @@ function deselect() {
   // Recompute which nodes should be visible
   const activeGroups = new Set([...document.querySelectorAll('.group-filter:checked')].map(c => c.dataset.group));
   const showIsolated = document.getElementById('isolated-toggle').checked;
-  const effectiveMin = showIsolated ? 0 : Math.max(minDegree, 1);
 
-  const visibleNodes = ALL_NODES.filter(n => {
+  const visibleNodesTemp = ALL_NODES.filter(n => {
     const deg = DEGREE[n.id] || 0;
-    if (deg === 0) return showIsolated && minDegree === 0 && activeGroups.has(n.group);
-    return deg >= effectiveMin && activeGroups.has(n.group);
+    if (!activeGroups.has(n.group)) return false;
+    if (deg === 0) return showIsolated;
+    return deg >= Math.max(minDegree, 1);
   });
+  let visibleIds = new Set(visibleNodesTemp.map(n => n.id));
+  const visibleEdges = ALL_EDGES.filter(e => visibleIds.has(e.from) && visibleIds.has(e.to));
+
+  let visibleNodes = visibleNodesTemp;
+  if (!showIsolated) {
+    const hasEdge = new Set();
+    visibleEdges.forEach(e => { hasEdge.add(e.from); hasEdge.add(e.to); });
+    visibleNodes = visibleNodesTemp.filter(n => hasEdge.has(n.id));
+    visibleIds = new Set(visibleNodes.map(n => n.id));
+  }
 
   // Restore nodes with their saved positions so the layout snaps back
   const restoredNodes = visibleNodes.map(n => {
     const pos = savedPositions[n.id];
     return pos ? { ...n, x: pos.x, y: pos.y } : n;
   });
-  const visibleIds = new Set(visibleNodes.map(n => n.id));
 
   nodesDS.clear();
   edgesDS.clear();
   nodesDS.add(restoredNodes);
-  edgesDS.add(ALL_EDGES.filter(e => visibleIds.has(e.from) && visibleIds.has(e.to)));
+  edgesDS.add(visibleEdges);
 
   // Physics stays off — layout is already computed
   network.setOptions({ physics: { enabled: false } });
@@ -554,18 +563,12 @@ let _hoverId = null;
 let _hoverPrev = null;
 
 function highlightNode(id) {
-  // #region agent log
-  console.warn('[DBG351533] highlightNode', {id, prevHoverId:_hoverId, nodeExists:!!nodesDS.get(id)});
-  // #endregion
   if (_hoverId === id) return;
   if (_hoverId) unhighlightNode(_hoverId);
   const node = nodesDS.get(id);
   if (!node) return;
   _hoverId = id;
   _hoverPrev = { borderWidth: node.borderWidth, shadow: JSON.parse(JSON.stringify(node.shadow || {})), size: node.size };
-  // #region agent log
-  console.warn('[DBG351533] highlightNode:saved', {id, prevBW:_hoverPrev.borderWidth, prevShadow:_hoverPrev.shadow, prevSize:_hoverPrev.size});
-  // #endregion
   nodesDS.update({ id: id, borderWidth: 4, shadow: { enabled: true, color: '#FFD70088', size: 15, x: 0, y: 0 },
     size: (node.size || 12) + 8 });
   network.focus(id, { scale: network.getScale(), animation: { duration: 200, easingFunction: 'easeInOutQuad' } });
@@ -573,20 +576,13 @@ function highlightNode(id) {
 
 function unhighlightNode(id) {
   if (!id) id = _hoverId;
-  // #region agent log
-  console.warn('[DBG351533] unhighlightNode', {id, hoverId:_hoverId, hasPrev:!!_hoverPrev, nodeExists:!!nodesDS.get(id), idMatch:id===_hoverId});
-  // #endregion
   if (!id) return;
   const node = nodesDS.get(id);
-  if (!node) { _hoverId = null; _hoverPrev = null; return; }
+  if (!node) { clearHoverState(); return; }
   if (_hoverPrev && id === _hoverId) {
-    // #region agent log
-    console.warn('[DBG351533] unhighlight:restoring', {id, bw:_hoverPrev.borderWidth, shadow:_hoverPrev.shadow, size:_hoverPrev.size});
-    // #endregion
     nodesDS.update({ id: id, borderWidth: _hoverPrev.borderWidth, shadow: _hoverPrev.shadow, size: _hoverPrev.size });
   }
-  _hoverId = null;
-  _hoverPrev = null;
+  clearHoverState();
 }
 
 function clearDetail() {
@@ -604,6 +600,10 @@ document.querySelectorAll('.group-filter').forEach(cb => {
   cb.addEventListener('change', () => { if (!selectedId) applyFilters(); });
 });
 
+function onDegreeInput(val) {
+  document.getElementById('degree-val').textContent = val;
+}
+
 function onDegreeChange(val) {
   minDegree = parseInt(val);
   document.getElementById('degree-val').textContent = val;
@@ -614,41 +614,65 @@ function applyFilters() {
   const activeGroups = new Set([...document.querySelectorAll('.group-filter:checked')].map(c => c.dataset.group));
   const searchVal = document.getElementById('nav-search').value.toLowerCase();
   const showIsolated = document.getElementById('isolated-toggle').checked;
-  const effectiveMin = showIsolated ? 0 : Math.max(minDegree, 1);
 
-  const visibleNodes = ALL_NODES.filter(n => {
+  const visibleNodesTemp = ALL_NODES.filter(n => {
     const deg = DEGREE[n.id] || 0;
-    // isolated nodes: only show if toggle is on AND minDegree is 0
-    if (deg === 0) return showIsolated && minDegree === 0 && activeGroups.has(n.group);
-    const degOk = deg >= effectiveMin;
     const groupOk = activeGroups.has(n.group);
     const searchOk = !searchVal || n.id.toLowerCase().includes(searchVal) || (n.title || '').toLowerCase().includes(searchVal);
-    return degOk && groupOk && searchOk;
+    if (!groupOk || !searchOk) return false;
+    if (deg === 0) return showIsolated;
+    return deg >= Math.max(minDegree, 1);
   });
-  const visibleIds = new Set(visibleNodes.map(n => n.id));
+  let visibleIds = new Set(visibleNodesTemp.map(n => n.id));
+  const visibleEdges = ALL_EDGES.filter(e => visibleIds.has(e.from) && visibleIds.has(e.to));
 
-  // Restore positions so the layout doesn't reset
+  let visibleNodes = visibleNodesTemp;
+  if (!showIsolated) {
+    const hasEdge = new Set();
+    visibleEdges.forEach(e => { hasEdge.add(e.from); hasEdge.add(e.to); });
+    visibleNodes = visibleNodesTemp.filter(n => hasEdge.has(n.id));
+    visibleIds = new Set(visibleNodes.map(n => n.id));
+  }
+
+  // Snapshot current positions before clearing
   const currentPositions = network.getPositions();
+  let hasNewNodes = false;
   const positionedNodes = visibleNodes.map(n => {
     const pos = currentPositions[n.id] || savedPositions[n.id];
+    if (!pos) hasNewNodes = true;
     return pos ? { ...n, x: pos.x, y: pos.y } : n;
   });
 
   nodesDS.clear();
   edgesDS.clear();
   nodesDS.add(positionedNodes);
-  edgesDS.add(ALL_EDGES.filter(e => visibleIds.has(e.from) && visibleIds.has(e.to)));
+  edgesDS.add(visibleEdges);
 
   // Rebuild adjacency after filter
   ALL_NODES.forEach(n => { FWD[n.id] = new Set(); BWD[n.id] = new Set(); });
   edgesDS.get().forEach(e => { FWD[e.from]?.add(e.to); BWD[e.to]?.add(e.from); });
+
+  // If new nodes appeared without positions, run quick physics to settle them
+  if (hasNewNodes && visibleNodes.length > 0) {
+    network.setOptions({ physics: {
+      enabled: true,
+      barnesHut: { gravitationalConstant: -5000, springLength: 100, springConstant: 0.05, damping: 0.2 },
+      stabilization: { enabled: true, iterations: 80, updateInterval: 25 }
+    }});
+    network.once('stabilized', () => {
+      network.setOptions({ physics: { enabled: false } });
+      physicsOn = false;
+      document.getElementById('phys-btn').textContent = '▶ Unfreeze';
+      // Update savedPositions with newly computed layout
+      Object.assign(savedPositions, network.getPositions());
+    });
+  }
 
   // If searching, highlight matches and zoom to them
   if (searchVal) {
     const matchIds = visibleNodes
       .filter(n => n.id.toLowerCase().includes(searchVal) || (n.title||'').toLowerCase().includes(searchVal))
       .map(n => n.id);
-    // Bold/enlarge matched nodes
     const updates = visibleNodes.map(n => {
       const isMatch = n.id.toLowerCase().includes(searchVal) || (n.title||'').toLowerCase().includes(searchVal);
       return isMatch
@@ -661,12 +685,16 @@ function applyFilters() {
     if (matchIds.length > 0) {
       network.fit({ nodes: matchIds, animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
     }
+  } else {
+    network.fit({ animation: { duration: 300, easingFunction: 'easeInOutQuad' } });
   }
 
   // Update stats
+  const showing = visibleNodes.length;
   const isolated = ALL_NODES.filter(n => DEGREE[n.id] === 0).length;
+  const hiddenIso = showIsolated ? 0 : isolated;
   document.getElementById('degree-stats').textContent =
-    \`Showing \${visibleNodes.length} of \${ALL_NODES.length} tools (\${isolated} isolated hidden)\`;
+    \`Showing \${showing} of \${ALL_NODES.length} tools\${hiddenIso ? ' (' + hiddenIso + ' isolated hidden)' : ''}\`;
 }
 
 function toggleAll(checked) {
