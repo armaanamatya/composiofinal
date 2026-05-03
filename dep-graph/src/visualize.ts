@@ -458,18 +458,37 @@ function showToolDetail(toolId) {
     }
   }
 
-  if (inEdges.length > 0) {
-    html += \`<div class="section-title" style="color:#FF8C00">▲ Depends on (\${inEdges.length})</div><div class="edge-list">\`;
-    for (const e of inEdges) {
-      html += \`<div class="edge-item edge-up" title="\${e.reason}" onclick="selectNode('\${e.from}')" onmouseenter="highlightNode('\${e.from}')" onmouseleave="unhighlightNode('\${e.from}')"><span class="edge-tool">\${e.from}</span><span class="edge-param">\${e.label}</span></div>\`;
+  // Deduplicate edges by tool id, grouping their param labels
+  function groupEdges(edges, keyFn) {
+    const map = {};
+    for (const e of edges) {
+      const k = keyFn(e);
+      if (!map[k]) map[k] = { id: k, labels: [], reasons: [] };
+      if (!map[k].labels.includes(e.label)) map[k].labels.push(e.label);
+      if (e.reason && !map[k].reasons.includes(e.reason)) map[k].reasons.push(e.reason);
+    }
+    return Object.values(map);
+  }
+
+  const inGrouped = groupEdges(inEdges, e => e.from);
+  const outGrouped = groupEdges(outEdges, e => e.to);
+
+  if (inGrouped.length > 0) {
+    html += \`<div class="section-title" style="color:#FF8C00">▲ Depends on (\${inGrouped.length})</div><div class="edge-list">\`;
+    for (const g of inGrouped) {
+      const tip = g.reasons.join('; ');
+      const params = g.labels.map(l => \`<span class="edge-param">\${l}</span>\`).join(' ');
+      html += \`<div class="edge-item edge-up" title="\${tip}" onclick="selectNode('\${g.id}')" onmouseenter="highlightNode('\${g.id}')" onmouseleave="unhighlightNode('\${g.id}')"><span class="edge-tool">\${g.id}</span>\${params}</div>\`;
     }
     html += '</div>';
   }
 
-  if (outEdges.length > 0) {
-    html += \`<div class="section-title" style="color:#00BFFF">▼ Enables (\${outEdges.length})</div><div class="edge-list">\`;
-    for (const e of outEdges) {
-      html += \`<div class="edge-item edge-down" title="\${e.reason}" onclick="selectNode('\${e.to}')"><span class="edge-tool">\${e.to}</span><span class="edge-param">\${e.label}</span></div>\`;
+  if (outGrouped.length > 0) {
+    html += \`<div class="section-title" style="color:#00BFFF">▼ Enables (\${outGrouped.length})</div><div class="edge-list">\`;
+    for (const g of outGrouped) {
+      const tip = g.reasons.join('; ');
+      const params = g.labels.map(l => \`<span class="edge-param">\${l}</span>\`).join(' ');
+      html += \`<div class="edge-item edge-down" title="\${tip}" onclick="selectNode('\${g.id}')" onmouseenter="highlightNode('\${g.id}')" onmouseleave="unhighlightNode('\${g.id}')"><span class="edge-tool">\${g.id}</span>\${params}</div>\`;
     }
     html += '</div>';
   }
@@ -477,22 +496,31 @@ function showToolDetail(toolId) {
   document.getElementById('tool-detail').innerHTML = html;
 }
 
+let _hoverId = null;
+let _hoverPrev = null;
+
 function highlightNode(id) {
+  if (_hoverId === id) return;
+  if (_hoverId) unhighlightNode(_hoverId);
   const node = nodesDS.get(id);
   if (!node) return;
+  _hoverId = id;
+  _hoverPrev = { borderWidth: node.borderWidth, shadow: node.shadow, size: node.size };
   nodesDS.update({ id: id, borderWidth: 4, shadow: { enabled: true, color: '#FFD70088', size: 15, x: 0, y: 0 },
-    size: (ORIG_SIZE[id] || 12) + 8 });
+    size: (node.size || 12) + 8 });
   network.focus(id, { scale: network.getScale(), animation: { duration: 200, easingFunction: 'easeInOutQuad' } });
 }
 
 function unhighlightNode(id) {
+  if (!id) id = _hoverId;
+  if (!id) return;
   const node = nodesDS.get(id);
   if (!node) return;
-  // Restore to whatever it was before the hover highlight
-  const orig = ALL_NODES.find(n => n.id === id);
-  if (!orig) return;
-  nodesDS.update({ id: id, borderWidth: orig.borderWidth || 1, shadow: { enabled: false },
-    size: ORIG_SIZE[id] || 9 });
+  if (_hoverPrev && id === _hoverId) {
+    nodesDS.update({ id: id, borderWidth: _hoverPrev.borderWidth, shadow: _hoverPrev.shadow, size: _hoverPrev.size });
+  }
+  _hoverId = null;
+  _hoverPrev = null;
 }
 
 function clearDetail() {
