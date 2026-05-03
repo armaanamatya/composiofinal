@@ -59,12 +59,12 @@ require_cmd() {
 	fi
 }
 
-require_cmd zip
+require_cmd python
 require_cmd curl
 
 PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 TEMP_DIR=$(mktemp -d)
-ZIP_FILE="$TEMP_DIR/submission.zip"
+ZIP_FILE="submission.zip"
 AGENT_SESSIONS_DIR="$PROJECT_ROOT/agent-sessions"
 WINDOW_MINUTES="${SESSION_WINDOW_MINUTES:-90}"
 COLLECTOR_CACHE_DIR="${SESSION_COLLECTOR_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/composio-session-collector}"
@@ -72,7 +72,7 @@ DEFAULT_INSTALLER_URL="https://eng.hiring.composio.io/api/agent-sessions/install
 COLLECTOR_SOURCE=""
 COLLECTOR_BIN=""
 
-trap 'rm -rf "$TEMP_DIR"' EXIT
+# trap removed
 
 collector_platform() {
 	local os_name
@@ -291,22 +291,7 @@ echo "Creating zip file..."
 
 cd "$PROJECT_ROOT"
 
-zip -r "$ZIP_FILE" . \
-	-x ".git/*" \
-	-x "node_modules/*" \
-	-x ".session-collector-bin/*" \
-	-x ".venv/*" \
-	-x "__pycache__/*" \
-	-x ".cache/*" \
-	-x ".next/*" \
-	-x "*.tsbuildinfo" \
-	-x "dist/*" \
-	-x ".DS_Store" \
-	-x ".env*" \
-	-x "*.log" \
-	-x "coverage/*" \
-	-x "*.pem" \
-	-x "project.zip"
+python zipper.py "$ZIP_FILE" .
 
 if [ ! -f "$ZIP_FILE" ]; then
 	echo "Error: Failed to create zip file" >&2
